@@ -6,6 +6,17 @@ import { visitorKeys } from '@typescript-eslint/visitor-keys'
 import MagicString from 'magic-string'
 import { createHash } from 'node:crypto'
 
+declare module '@typescript-eslint/types' {
+  export namespace TSESTree {
+    interface BaseNode {
+      start: number
+      end: number
+    }
+  }
+}
+
+
+
 
 function CssExtract(): PluginOption {
   const virtualCssFiles = new Map<string, string>()
