@@ -28,3 +28,9 @@ export function css<const T extends string>(string: T): Record<Alt<T>[number], s
 export function css<T>(string: T): Record<string, string> {
 	return {}
 }
+
+export function inline<const T extends TemplateStringsArray>(string: T): string
+export function inline<const T extends string>(string: T): string
+export function inline<T>(string: T): string {
+	return ''
+}

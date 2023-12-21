@@ -1,7 +1,6 @@
 import { PluginOption, defineConfig } from 'vite'
-import type { AstNode } from "rollup"
 import react from '@vitejs/plugin-react'
-import { AST_NODE_TYPES, type TSESTree } from "@typescript-eslint/types"
+import { type TSESTree } from "@typescript-eslint/types"
 import { visitorKeys } from '@typescript-eslint/visitor-keys'
 import MagicString from 'magic-string'
 import { createHash } from 'node:crypto'
@@ -29,56 +28,113 @@ function CssExtract(): PluginOption {
     },
     load(id, options) {
       if (virtualCssFiles.has(id)) {
-        return virtualCssFiles.get(id)
+        const code = virtualCssFiles.get(id)
+        return code
       }
     },
     transform: {
       handler(code, id, options) {
         if (!id.endsWith(".tsx")) return { code, ast: null, map: null }
-        console.log('::id', id)
         const ast = this.parse(code)
-        let cssString = ''
-        const replacers: Array<{ start: number, end: number }> = []
+        const jsParts: Array<{ type: "global", start: number, end: number } | { type: "dynamic", start: number, end: number, id: string }> = []
+        const cssParts: Array<{ type: "take", start: number, end: number } | { type: "add", content: string }> = []
         walkAst(ast as unknown as TSESTree.Program, {
           TaggedTemplateExpression(node) {
-            if (node.tag.type !== "Identifier" || node.tag.name !== "css") return
-            const quasi = node.quasi
-            if (quasi.type !== "TemplateLiteral") return
-            const { quasis: [quasiNode] } = quasi
-            const css = quasiNode.value.raw
-            cssString += '\n' + css
-            replacers.push({ start: node.start, end: node.end })
+            if (node.tag.type !== "Identifier") return
+            if (node.tag.name === "css") {
+              const quasi = node.quasi
+              if (quasi.type !== "TemplateLiteral") return
+              const { quasis: [quasiNode] } = quasi
+              jsParts.push({ type: "global", start: node.start, end: node.end })
+              cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
+              return
+            }
+            if (node.tag.name === "inline") {
+              const quasi = node.quasi
+              if (quasi.type !== "TemplateLiteral") return
+              const { quasis: [quasiNode] } = quasi
+              const value = quasiNode.value.raw
+              const id = '_' + createHash('sha1').update(value.replace(/\s+/g, ' ')).digest('base64').replace(/\+/g, "_").replace(/\//g, "_").replace(/=/g, "")
+              jsParts.push({ type: "dynamic", start: node.start, end: node.end, id })
+              cssParts.push({ type: "add", content: `\n.${id}{\n` })
+              cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
+              cssParts.push({ type: "add", content: `\n}\n` })
+              return
+            }
           },
           CallExpression(node) {
-            if (node.callee.type !== "Identifier" || node.callee.name !== "css") return
-            const cssNode = node.arguments[0]
-            if (cssNode.type === "Literal") {
-              cssString += '\n' + cssNode.value
-              replacers.push({ start: node.start, end: node.end })
-            } else if (cssNode.type === "TemplateLiteral") {
-              const { quasis: [quasiNode] } = cssNode
-              const css = quasiNode.value.raw
-              cssString += '\n' + css
-              replacers.push({ start: node.start, end: node.end })
+            if (node.callee.type !== "Identifier") return
+            if (node.callee.name === "css") {
+              const cssNode = node.arguments[0]
+              if (cssNode.type === "Literal") {
+                jsParts.push({ type: "global", start: node.start, end: node.end })
+                cssParts.push({ type: "take", start: cssNode.start, end: cssNode.end })
+              } else if (cssNode.type === "TemplateLiteral") {
+                const { quasis: [quasiNode] } = cssNode
+                jsParts.push({ type: "global", start: node.start, end: node.end })
+                cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
+              }
+              return
+            }
+            if (node.callee.name === "inline") {
+              const cssNode = node.arguments[0]
+              if (cssNode.type === "Literal") {
+                const value = cssNode.value
+                if (typeof value !== "string") return
+                const id = '_' + createHash('sha1').update(value.replace(/\s+/g, ' ')).digest('base64').replace(/\+/g, "_").replace(/\//g, "_").replace(/=/g, "")
+                jsParts.push({ type: "dynamic", start: node.start, end: node.end, id })
+                cssParts.push({ type: "add", content: `\n.${id}{\n` })
+                cssParts.push({ type: "take", start: cssNode.start, end: cssNode.end })
+                cssParts.push({ type: "add", content: `\n}\n` })
+              } else if (cssNode.type === "TemplateLiteral") {
+                const { quasis: [quasiNode] } = cssNode
+                const value = quasiNode.value.raw
+                const id = '_' + createHash('sha1').update(value.replace(/\s+/g, ' ')).digest('base64').replace(/\+/g, "_").replace(/\//g, "_").replace(/=/g, "")
+                jsParts.push({ type: "dynamic", start: node.start, end: node.end, id })
+                cssParts.push({ type: "add", content: `\n.${id}{\n` })
+                cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
+                cssParts.push({ type: "add", content: `\n}\n` })
+              }
+              return
             }
           }
         })
 
-        if (cssString === '') return { code, ast, map: null }
+        if (cssParts.length === 0) return { code, ast, map: null }
+
+        let cssString = ""
+        for (const part of cssParts) {
+          if (part.type === "add") {
+            cssString += part.content
+            continue
+          }
+          if (part.type === "take") {
+            cssString += code.slice(part.start, part.end)
+            continue
+          }
+        }
+        cssString = cssString.replace(/\n+/g, "\n")
+        const cssFileName = createHash('sha1').update(cssString).digest('base64') + '.module.css'
+        virtualCssFiles.set(cssFileName, cssString)
 
         const s = new MagicString(code)
-        for (let i = replacers.length - 1; i >= 0; i--) {
-          // s.update(11, 13, '42')
-          const { start, end } = replacers[i]
-          s.update(start, end, '__GENERATED_CLASSES_OBJECT__')
+        for (let i = jsParts.length - 1; i >= 0; i--) {
+          const current = jsParts[i]
+          if (current.type === "global") {
+            const { start, end } = current
+            s.update(start, end, '__GENERATED_CLASSES_OBJECT__')
+            continue
+          }
+          if (current.type === "dynamic") {
+            const { start, end, id } = current
+            s.update(start, end, `__GENERATED_CLASSES_OBJECT__.${id}`)
+            continue
+          }
         }
-        const foo = createHash('sha1').update(cssString).digest('base64')
-        const cssFileName = foo + '.module.css'
-        s.prepend(`import __GENERATED_CLASSES_OBJECT__ from '${cssFileName}';\n`)
-        const map = s.generateMap({})
-        const transformed = s.toString()
 
-        virtualCssFiles.set(cssFileName, cssString)
+        s.prepend(`import __GENERATED_CLASSES_OBJECT__ from '${cssFileName}';\n`)
+        const map = s.generateMap({ source: id })
+        const transformed = s.toString()
 
         return {
           // ast,
@@ -130,6 +186,15 @@ export default defineConfig({
   plugins: [CssExtract(), react()],
   build: {
     sourcemap: true,
+    cssMinify: "lightningcss"
+  },
+  css: {
+    transformer: 'lightningcss',
+    lightningcss: {
+      cssModules: {
+        dashedIdents: false,
+      },
+    }
   }
 })
 

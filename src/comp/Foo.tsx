@@ -1,5 +1,4 @@
-import classes from './Foo.module.css'
-import { css } from "./css"
+import { css, inline } from "./css"
 
 const a = css(`
 	.foobar {
@@ -18,11 +17,23 @@ const b = css(`
 `)
 const B = () => <div className={b.yolo}>Bonjour</div>
 
+const C = () => (
+	<div
+		className={inline`
+			color: purple;
+		`}
+	>
+		Hola
+	</div>
+)
+
 export default function Foo() {
+	console.log('in Foo', css`.michel { color: red; }`)
 	return (
 		<>
 			<A />
 			<B />
+			<C />
 		</>
 	)
 }
