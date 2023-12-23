@@ -58,8 +58,8 @@ function CssExtract(): PluginOption {
               jsParts.push({ type: "global", start: node.start - add, end: node.end })
               cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
               const length = node.end - (node.start - add)
-              makeGlobalNode(node)
-              add += node.end - node.start - length
+              const mutatedNode = makeGlobalNode(node)
+              add += mutatedNode.end - mutatedNode.start - length
               return
             }
             if (node.tag.name === "inline") {
@@ -73,8 +73,8 @@ function CssExtract(): PluginOption {
               cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
               cssParts.push({ type: "add", content: `\n}\n` })
               const length = node.end - (node.start - add)
-              makeDynamicNode(node, id)
-              add += node.end - node.start - length
+              const mutatedNode = makeDynamicNode(node, id)
+              add += mutatedNode.end - mutatedNode.start - length
               return
             }
           },
@@ -91,8 +91,8 @@ function CssExtract(): PluginOption {
                 cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
               } else { return }
               const length = node.end - (node.start - add)
-              makeGlobalNode(node)
-              add += node.end - node.start - length
+              const mutatedNode = makeGlobalNode(node)
+              add += mutatedNode.end - mutatedNode.start - length
               return
             }
             if (node.callee.name === "inline") {
@@ -115,8 +115,8 @@ function CssExtract(): PluginOption {
                 cssParts.push({ type: "add", content: `\n}\n` })
               } else { return }
               const length = node.end - (node.start - add)
-              makeDynamicNode(node, id)
-              add += node.end - node.start - length
+              const mutatedNode = makeDynamicNode(node, id)
+              add += mutatedNode.end - mutatedNode.start - length
               return
             }
           }
@@ -172,7 +172,10 @@ function CssExtract(): PluginOption {
   }
 }
 
-function makeGlobalNode(node: TSESTree.BaseNode) {
+/**
+ * Mutates the given node so it remains in the tree without knowing its location
+ */
+function makeGlobalNode(node: TSESTree.BaseNode): TSESTree.Identifier {
   const start = node.start
   const parent = node.parent
   Object.keys(node).forEach(key => delete node[key])
@@ -190,9 +193,13 @@ function makeGlobalNode(node: TSESTree.BaseNode) {
     range: null,
   }
   Object.assign(node, newNode)
+  return newNode
 }
 
-function makeDynamicNode(node: TSESTree.BaseNode, id: string) {
+/**
+ * Mutates the given node so it remains in the tree without knowing its location
+ */
+function makeDynamicNode(node: TSESTree.BaseNode, id: string): TSESTree.MemberExpression {
   const start = node.start
   const parent = node.parent
   Object.keys(node).forEach(key => delete node[key])
@@ -236,6 +243,7 @@ function makeDynamicNode(node: TSESTree.BaseNode, id: string) {
   }
   newNode.property = property
   Object.assign(node, newNode)
+  return newNode
 }
 
 function addImportSpecifierNode(ast: TSESTree.Program & TSESTree.BaseNode, importStr: string, cssFileName: string) {
