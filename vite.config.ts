@@ -1,6 +1,6 @@
 import { PluginOption, defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { type TSESTree } from "@typescript-eslint/types"
+import { TSESTree } from "@typescript-eslint/types"
 import { visitorKeys } from '@typescript-eslint/visitor-keys'
 import MagicString from 'magic-string'
 import { createHash } from 'node:crypto'
@@ -15,7 +15,9 @@ declare module '@typescript-eslint/types' {
 }
 
 
+const importName = '__GENERATED_CLASSES_OBJECT__'
 
+const SKIP = Symbol('skip')
 
 function CssExtract(): PluginOption {
   const virtualCssFiles = new Map<string, string>()
@@ -38,15 +40,25 @@ function CssExtract(): PluginOption {
         const ast = this.parse(code)
         const jsParts: Array<{ type: "global", start: number, end: number } | { type: "dynamic", start: number, end: number, id: string }> = []
         const cssParts: Array<{ type: "take", start: number, end: number } | { type: "add", content: string }> = []
-        walkAst(ast as unknown as TSESTree.Program, {
+        let add = 0
+        walkAst(ast as unknown as TSESTree.BaseNode, {
+          '*'(node) {
+            node.start += add
+          },
+          '*:exit'(node) {
+            node.end += add
+          },
           TaggedTemplateExpression(node) {
             if (node.tag.type !== "Identifier") return
             if (node.tag.name === "css") {
               const quasi = node.quasi
               if (quasi.type !== "TemplateLiteral") return
               const { quasis: [quasiNode] } = quasi
-              jsParts.push({ type: "global", start: node.start, end: node.end })
+              jsParts.push({ type: "global", start: node.start - add, end: node.end })
               cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
+              const length = node.end - (node.start - add)
+              makeGlobalNode(node)
+              add += node.end - node.start - length
               return
             }
             if (node.tag.name === "inline") {
@@ -55,10 +67,13 @@ function CssExtract(): PluginOption {
               const { quasis: [quasiNode] } = quasi
               const value = quasiNode.value.raw
               const id = '_' + createHash('sha1').update(value.replace(/\s+/g, ' ')).digest('base64').replace(/\+/g, "_").replace(/\//g, "_").replace(/=/g, "")
-              jsParts.push({ type: "dynamic", start: node.start, end: node.end, id })
+              jsParts.push({ type: "dynamic", start: node.start - add, end: node.end, id })
               cssParts.push({ type: "add", content: `\n.${id}{\n` })
               cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
               cssParts.push({ type: "add", content: `\n}\n` })
+              const length = node.end - (node.start - add)
+              makeDynamicNode(node, id)
+              add += node.end - node.start - length
               return
             }
           },
@@ -67,13 +82,16 @@ function CssExtract(): PluginOption {
             if (node.callee.name === "css") {
               const cssNode = node.arguments[0]
               if (cssNode.type === "Literal") {
-                jsParts.push({ type: "global", start: node.start, end: node.end })
+                jsParts.push({ type: "global", start: node.start - add, end: node.end })
                 cssParts.push({ type: "take", start: cssNode.start, end: cssNode.end })
               } else if (cssNode.type === "TemplateLiteral") {
                 const { quasis: [quasiNode] } = cssNode
-                jsParts.push({ type: "global", start: node.start, end: node.end })
+                jsParts.push({ type: "global", start: node.start - add, end: node.end })
                 cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
-              }
+              } else { return }
+              const length = node.end - (node.start - add)
+              makeGlobalNode(node)
+              add += node.end - node.start - length
               return
             }
             if (node.callee.name === "inline") {
@@ -82,7 +100,7 @@ function CssExtract(): PluginOption {
                 const value = cssNode.value
                 if (typeof value !== "string") return
                 const id = '_' + createHash('sha1').update(value.replace(/\s+/g, ' ')).digest('base64').replace(/\+/g, "_").replace(/\//g, "_").replace(/=/g, "")
-                jsParts.push({ type: "dynamic", start: node.start, end: node.end, id })
+                jsParts.push({ type: "dynamic", start: node.start - add, end: node.end, id })
                 cssParts.push({ type: "add", content: `\n.${id}{\n` })
                 cssParts.push({ type: "take", start: cssNode.start, end: cssNode.end })
                 cssParts.push({ type: "add", content: `\n}\n` })
@@ -90,11 +108,14 @@ function CssExtract(): PluginOption {
                 const { quasis: [quasiNode] } = cssNode
                 const value = quasiNode.value.raw
                 const id = '_' + createHash('sha1').update(value.replace(/\s+/g, ' ')).digest('base64').replace(/\+/g, "_").replace(/\//g, "_").replace(/=/g, "")
-                jsParts.push({ type: "dynamic", start: node.start, end: node.end, id })
+                jsParts.push({ type: "dynamic", start: node.start - add, end: node.end, id })
                 cssParts.push({ type: "add", content: `\n.${id}{\n` })
                 cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
                 cssParts.push({ type: "add", content: `\n}\n` })
-              }
+              } else { return }
+              const length = node.end - (node.start - add)
+              makeDynamicNode(node, id)
+              add += node.end - node.start - length
               return
             }
           }
@@ -122,59 +143,181 @@ function CssExtract(): PluginOption {
           const current = jsParts[i]
           if (current.type === "global") {
             const { start, end } = current
-            s.update(start, end, '__GENERATED_CLASSES_OBJECT__')
+            s.update(start, end, importName)
             continue
           }
           if (current.type === "dynamic") {
             const { start, end, id } = current
-            s.update(start, end, `__GENERATED_CLASSES_OBJECT__.${id}`)
+            s.update(start, end, `${importName}.${id}`)
             continue
           }
         }
 
-        s.prepend(`import __GENERATED_CLASSES_OBJECT__ from '${cssFileName}';\n`)
+        const importStr = `\nimport ${importName} from '${cssFileName}';`
+        s.append(importStr)
         const map = s.generateMap({ source: id })
         const transformed = s.toString()
 
+        addImportSpecifierNode(ast as unknown as TSESTree.Program, importStr, cssFileName)
+
         return {
-          // ast,
+          ast,
           code: transformed,
           map,
-          // code: string;
-          // map?: SourceMapInput;
         }
       },
     }
   }
 }
 
+function makeGlobalNode(node: TSESTree.BaseNode) {
+  const start = node.start
+  // const parent = node.parent
+  Object.keys(node).forEach(key => delete node[key])
+  const newNode: TSESTree.Identifier = {
+    type: TSESTree.AST_NODE_TYPES.Identifier,
+    name: importName,
+    start: start,
+    end: start + importName.length,
+    // parent: parent,
+    decorators: null,
+    typeAnnotation: null,
+    optional: false,
+    [SKIP]: true,
+  }
+  Object.assign(node, newNode)
+}
+
+function makeDynamicNode(node: TSESTree.BaseNode, id: string) {
+  const start = node.start
+  // const parent = node.parent
+  Object.keys(node).forEach(key => delete node[key])
+  const newNode: TSESTree.MemberExpression = {
+    type: TSESTree.AST_NODE_TYPES.MemberExpression,
+    object: null,
+    property: null,
+    computed: false,
+    start: start,
+    end: start + importName.length + 1 + id.length,
+    // parent: parent,
+    optional: false,
+    [SKIP]: true,
+  }
+  const identifier: TSESTree.Identifier = {
+    type: TSESTree.AST_NODE_TYPES.Identifier,
+    name: importName,
+    start: start,
+    end: start + importName.length,
+    decorators: null,
+    typeAnnotation: null,
+    optional: false,
+    // parent: newNode,
+  }
+  newNode.object = identifier
+  const property: TSESTree.Identifier = {
+    type: TSESTree.AST_NODE_TYPES.Identifier,
+    name: id,
+    start: start + importName.length + 1,
+    end: start + importName.length + 1 + id.length,
+    decorators: null,
+    typeAnnotation: null,
+    optional: false,
+    // parent: newNode,
+  }
+  newNode.property = property
+  Object.assign(node, newNode)
+}
+
+function addImportSpecifierNode(ast: TSESTree.Program, importStr: string, cssFileName: string) {
+  const end = ast.end + 1
+  ast.end += importStr.length
+
+  const declaration: TSESTree.ImportDeclaration = {
+    type: TSESTree.AST_NODE_TYPES.ImportDeclaration,
+    source: null,
+    specifiers: [],
+    start: end,
+    end: end + importStr.length - 1,
+    attributes: null,
+    importKind: null,
+    // parent: ast,
+  }
+
+  const source: TSESTree.Literal = {
+    type: TSESTree.AST_NODE_TYPES.Literal,
+    value: cssFileName,
+    raw: `'${cssFileName}'`,
+    start: end + 41,
+    end: end + importStr.length - 2,
+    // parent: declaration,
+  }
+  declaration.source = source
+
+  const importSpecifier: TSESTree.ImportDefaultSpecifier = {
+    type: TSESTree.AST_NODE_TYPES.ImportDefaultSpecifier,
+    local: null,
+    start: end + 7,
+    end: end + 35,
+    // parent: declaration,
+  }
+  declaration.specifiers.push(importSpecifier)
+
+  const identifier: TSESTree.Identifier = {
+    type: TSESTree.AST_NODE_TYPES.Identifier,
+    name: importName,
+    start: end + 7,
+    end: end + 35,
+    decorators: null,
+    typeAnnotation: null,
+    optional: false,
+    // parent: importSpecifier,
+  }
+  importSpecifier.local = identifier
+
+  ast.body.push(declaration)
+}
+
 type Listener = {
   [key in keyof AllNodes]?: (node: AllNodes[key]) => void
 } & {
     [key in keyof AllNodes as `${key}:exit`]?: (node: AllNodes[key]) => void
+  } & {
+    '*'?: (node: TSESTree.BaseNode) => void
+    '*:exit'?: (node: TSESTree.BaseNode) => void
   }
 
-function walkAst(ast: TSESTree.Node, listener: Listener) {
+function walkAst(ast: TSESTree.BaseNode, listener: Listener) {
 
-  const walker = <TNode extends TSESTree.Node>(node: TNode) => {
+  const walker = <TNode extends TSESTree.BaseNode>(node: TNode) => {
+    if ('*' in listener) {
+      listener['*'](node)
+    }
     if (node.type in listener) {
       listener[node.type](node)
     }
+    if (node[SKIP]) {
+      return
+    }
 
-    const keys = visitorKeys[node.type] as ReadonlyArray<keyof TNode & string>
-    for (const key of keys) {
-      const child = node[key] as TSESTree.Node | TSESTree.Node[] | undefined
-      if (!child) continue
-      if (Array.isArray(child)) {
-        for (const c of child) {
-          walker(c)
+    const keys = visitorKeys[node.type]?.concat('_rollupAnnotations') as ReadonlyArray<keyof TNode & string>
+    if (keys) {
+      for (const key of keys) {
+        const child = node[key] as TSESTree.BaseNode | TSESTree.BaseNode[] | undefined
+        if (!child) continue
+        if (Array.isArray(child)) {
+          for (const c of child) {
+            walker(c)
+          }
+        } else if (child) {
+          walker(child)
         }
-      } else if (child) {
-        walker(child)
       }
     }
     if (`${node.type}:exit` in listener) {
       listener[`${node.type}:exit`](node)
+    }
+    if ('*:exit' in listener) {
+      listener['*:exit'](node)
     }
   }
 
