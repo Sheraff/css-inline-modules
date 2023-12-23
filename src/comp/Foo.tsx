@@ -1,3 +1,4 @@
+import { type CSSProperties } from "react"
 import { css, inline } from "./css"
 
 const a = css(`
@@ -20,8 +21,11 @@ const B = () => <div className={b.yolo}>Bonjour</div>
 const C = () => (
 	<div
 		className={inline`
-			color: purple;
+			color: var(--color);
 		`}
+		style={{
+			"--color": "purple",
+		} as CSSProperties}
 	>
 		Hola
 	</div>
