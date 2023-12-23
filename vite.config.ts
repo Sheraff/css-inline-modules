@@ -5,19 +5,20 @@ import { visitorKeys } from '@typescript-eslint/visitor-keys'
 import MagicString from 'magic-string'
 import { createHash } from 'node:crypto'
 
+const SKIP = Symbol('skip')
+
 declare module '@typescript-eslint/types' {
   export namespace TSESTree {
     interface BaseNode {
       start: number
       end: number
+      [SKIP]?: boolean
     }
   }
 }
 
 
 const importName = '__GENERATED_CLASSES_OBJECT__'
-
-const SKIP = Symbol('skip')
 
 function CssExtract(): PluginOption {
   const virtualCssFiles = new Map<string, string>()
@@ -37,11 +38,11 @@ function CssExtract(): PluginOption {
     transform: {
       handler(code, id, options) {
         if (!id.endsWith(".tsx")) return { code, ast: null, map: null }
-        const ast = this.parse(code)
+        const ast = this.parse(code) as TSESTree.Program & TSESTree.BaseNode
         const jsParts: Array<{ type: "global", start: number, end: number } | { type: "dynamic", start: number, end: number, id: string }> = []
         const cssParts: Array<{ type: "take", start: number, end: number } | { type: "add", content: string }> = []
         let add = 0
-        walkAst(ast as unknown as TSESTree.BaseNode, {
+        walkAst(ast, {
           '*'(node) {
             node.start += add
           },
@@ -158,7 +159,7 @@ function CssExtract(): PluginOption {
         const map = s.generateMap({ source: id })
         const transformed = s.toString()
 
-        addImportSpecifierNode(ast as unknown as TSESTree.Program, importStr, cssFileName)
+        addImportSpecifierNode(ast, importStr, cssFileName)
 
         return {
           ast,
@@ -172,25 +173,27 @@ function CssExtract(): PluginOption {
 
 function makeGlobalNode(node: TSESTree.BaseNode) {
   const start = node.start
-  // const parent = node.parent
+  const parent = node.parent
   Object.keys(node).forEach(key => delete node[key])
   const newNode: TSESTree.Identifier = {
     type: TSESTree.AST_NODE_TYPES.Identifier,
     name: importName,
     start: start,
     end: start + importName.length,
-    // parent: parent,
+    parent: parent,
     decorators: null,
     typeAnnotation: null,
     optional: false,
     [SKIP]: true,
+    loc: null,
+    range: null,
   }
   Object.assign(node, newNode)
 }
 
 function makeDynamicNode(node: TSESTree.BaseNode, id: string) {
   const start = node.start
-  // const parent = node.parent
+  const parent = node.parent
   Object.keys(node).forEach(key => delete node[key])
   const newNode: TSESTree.MemberExpression = {
     type: TSESTree.AST_NODE_TYPES.MemberExpression,
@@ -199,9 +202,11 @@ function makeDynamicNode(node: TSESTree.BaseNode, id: string) {
     computed: false,
     start: start,
     end: start + importName.length + 1 + id.length,
-    // parent: parent,
+    parent: parent,
     optional: false,
     [SKIP]: true,
+    loc: null,
+    range: null,
   }
   const identifier: TSESTree.Identifier = {
     type: TSESTree.AST_NODE_TYPES.Identifier,
@@ -211,7 +216,9 @@ function makeDynamicNode(node: TSESTree.BaseNode, id: string) {
     decorators: null,
     typeAnnotation: null,
     optional: false,
-    // parent: newNode,
+    parent: newNode,
+    loc: null,
+    range: null,
   }
   newNode.object = identifier
   const property: TSESTree.Identifier = {
@@ -222,13 +229,15 @@ function makeDynamicNode(node: TSESTree.BaseNode, id: string) {
     decorators: null,
     typeAnnotation: null,
     optional: false,
-    // parent: newNode,
+    parent: newNode,
+    loc: null,
+    range: null,
   }
   newNode.property = property
   Object.assign(node, newNode)
 }
 
-function addImportSpecifierNode(ast: TSESTree.Program, importStr: string, cssFileName: string) {
+function addImportSpecifierNode(ast: TSESTree.Program & TSESTree.BaseNode, importStr: string, cssFileName: string) {
   const end = ast.end + 1
   ast.end += importStr.length
 
@@ -240,7 +249,10 @@ function addImportSpecifierNode(ast: TSESTree.Program, importStr: string, cssFil
     end: end + importStr.length - 1,
     attributes: null,
     importKind: null,
-    // parent: ast,
+    parent: ast,
+    loc: null,
+    range: null,
+    assertions: null,
   }
 
   const source: TSESTree.Literal = {
@@ -249,7 +261,9 @@ function addImportSpecifierNode(ast: TSESTree.Program, importStr: string, cssFil
     raw: `'${cssFileName}'`,
     start: end + 41,
     end: end + importStr.length - 2,
-    // parent: declaration,
+    parent: declaration,
+    loc: null,
+    range: null,
   }
   declaration.source = source
 
@@ -258,7 +272,9 @@ function addImportSpecifierNode(ast: TSESTree.Program, importStr: string, cssFil
     local: null,
     start: end + 7,
     end: end + 35,
-    // parent: declaration,
+    parent: declaration,
+    loc: null,
+    range: null,
   }
   declaration.specifiers.push(importSpecifier)
 
@@ -270,7 +286,9 @@ function addImportSpecifierNode(ast: TSESTree.Program, importStr: string, cssFil
     decorators: null,
     typeAnnotation: null,
     optional: false,
-    // parent: importSpecifier,
+    parent: importSpecifier,
+    loc: null,
+    range: null,
   }
   importSpecifier.local = identifier
 
