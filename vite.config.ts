@@ -124,6 +124,7 @@ function CssExtract(): PluginOption {
 
         if (cssParts.length === 0) return { code, ast, map: null }
 
+        // if Vite supported sourcemap for css, we could generate the cssString with MagicString here instead
         let cssString = ""
         for (const part of cssParts) {
           if (part.type === "add") {
