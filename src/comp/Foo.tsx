@@ -1,12 +1,13 @@
 import { type CSSProperties } from "react"
 import { css, inline } from "./css"
+import styles from "./Foo.module.css"
 
 const a = css(`
 	.foobar {
 		color: limegreen;
 	}
 `)
-const A = () => <div className={a.foobar}>Hello</div>
+const A = () => <div className={`${a.foobar} ${styles.foobar}`}>Hello</div>
 
 const b = css(`
 	.yolo {

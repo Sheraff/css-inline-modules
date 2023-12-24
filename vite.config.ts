@@ -42,6 +42,7 @@ function CssExtract(): PluginOption {
         const jsParts: Array<{ type: "global", start: number, end: number } | { type: "dynamic", start: number, end: number, id: string }> = []
         const cssParts: Array<{ type: "take", start: number, end: number } | { type: "add", content: string }> = []
         let add = 0
+        let dynamicId = 0
         walkAst(ast, {
           '*'(node) {
             node.start += add
@@ -66,8 +67,7 @@ function CssExtract(): PluginOption {
               const quasi = node.quasi
               if (quasi.type !== "TemplateLiteral") return
               const { quasis: [quasiNode] } = quasi
-              const value = quasiNode.value.raw
-              const id = '_' + createHash('sha1').update(value.replace(/\s+/g, ' ')).digest('base64').replace(/\+/g, "_").replace(/\//g, "_").replace(/=/g, "")
+              const id = 'c' + dynamicId++
               jsParts.push({ type: "dynamic", start: node.start - add, end: node.end, id })
               cssParts.push({ type: "add", content: `\n.${id}{\n` })
               cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
@@ -100,15 +100,14 @@ function CssExtract(): PluginOption {
               if (cssNode.type === "Literal") {
                 const value = cssNode.value
                 if (typeof value !== "string") return
-                const id = '_' + createHash('sha1').update(value.replace(/\s+/g, ' ')).digest('base64').replace(/\+/g, "_").replace(/\//g, "_").replace(/=/g, "")
+                const id = 'c' + dynamicId++
                 jsParts.push({ type: "dynamic", start: node.start - add, end: node.end, id })
                 cssParts.push({ type: "add", content: `\n.${id}{\n` })
                 cssParts.push({ type: "take", start: cssNode.start, end: cssNode.end })
                 cssParts.push({ type: "add", content: `\n}\n` })
               } else if (cssNode.type === "TemplateLiteral") {
                 const { quasis: [quasiNode] } = cssNode
-                const value = quasiNode.value.raw
-                const id = '_' + createHash('sha1').update(value.replace(/\s+/g, ' ')).digest('base64').replace(/\+/g, "_").replace(/\//g, "_").replace(/=/g, "")
+                const id = 'c' + dynamicId++
                 jsParts.push({ type: "dynamic", start: node.start - add, end: node.end, id })
                 cssParts.push({ type: "add", content: `\n.${id}{\n` })
                 cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
@@ -137,7 +136,7 @@ function CssExtract(): PluginOption {
           }
         }
         cssString = cssString.replace(/\n+/g, "\n")
-        const cssFileName = createHash('sha1').update(cssString).digest('base64') + '.module.css'
+        const cssFileName = createHash('sha1').update(cssString).digest('base64').replace(/\+/g, "_").replace(/\//g, "_").replace(/=/g, "") + '.module.css'
         virtualCssFiles.set(cssFileName, cssString)
 
         const s = new MagicString(code)
