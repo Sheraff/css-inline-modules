@@ -1,8 +1,8 @@
 import { PluginOption, defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import react from '@vitejs/plugin-react-swc'
 import { TSESTree } from "@typescript-eslint/types"
 import { visitorKeys } from '@typescript-eslint/visitor-keys'
-import MagicString from 'magic-string'
+import MagicString, { SourceMap } from 'magic-string'
 import { createHash } from 'node:crypto'
 
 const SKIP = Symbol('skip')
@@ -22,6 +22,7 @@ const importName = '__GENERATED_CLASSES_OBJECT__'
 
 function CssExtract(): PluginOption {
   const virtualCssFiles = new Map<string, string>()
+  const virtualCssMaps = new Map<string, SourceMap>()
   return {
     name: "css-extract",
     resolveId(source, importer, options) {
@@ -32,7 +33,8 @@ function CssExtract(): PluginOption {
     load(id, options) {
       if (virtualCssFiles.has(id)) {
         const code = virtualCssFiles.get(id)
-        return code
+        const map = virtualCssMaps.get(id)
+        return { code, map }
       }
     },
     transform: {
@@ -40,9 +42,10 @@ function CssExtract(): PluginOption {
         if (!id.endsWith(".tsx")) return { code, ast: null, map: null }
         const ast = this.parse(code) as TSESTree.Program & TSESTree.BaseNode
         const jsParts: Array<{ type: "global", start: number, end: number } | { type: "dynamic", start: number, end: number, id: string }> = []
-        const cssParts: Array<{ type: "take", start: number, end: number } | { type: "add", content: string }> = []
+        const cssParts: Array<{ type: "take", start: number, end: number } | { type: "add", content: string, start: number }> = []
         let add = 0
         let dynamicId = 0
+
         walkAst(ast, {
           '*'(node) {
             node.start += add
@@ -50,11 +53,13 @@ function CssExtract(): PluginOption {
           '*:exit'(node) {
             node.end += add
           },
-          TaggedTemplateExpression(node) {
+          TaggedTemplateExpression: (node) => {
             if (node.tag.type !== "Identifier") return
             if (node.tag.name === "css") {
               const quasi = node.quasi
-              if (quasi.type !== "TemplateLiteral") return
+              if (quasi.quasis.length !== 1) {
+                this.error('css`` does not support dynamic parts', node.start)
+              }
               const { quasis: [quasiNode] } = quasi
               jsParts.push({ type: "global", start: node.start - add, end: node.end })
               cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
@@ -65,31 +70,41 @@ function CssExtract(): PluginOption {
             }
             if (node.tag.name === "inline") {
               const quasi = node.quasi
-              if (quasi.type !== "TemplateLiteral") return
+              if (quasi.quasis.length !== 1) {
+                this.error('inline`` does not support dynamic parts', node.start)
+              }
               const { quasis: [quasiNode] } = quasi
               const id = 'c' + dynamicId++
               jsParts.push({ type: "dynamic", start: node.start - add, end: node.end, id })
-              cssParts.push({ type: "add", content: `\n.${id}{\n` })
+              cssParts.push({ type: "add", content: `\n.${id}{\n`, start: quasiNode.start })
               cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
-              cssParts.push({ type: "add", content: `\n}\n` })
+              cssParts.push({ type: "add", content: `\n}\n`, start: quasiNode.end })
               const length = node.end - (node.start - add)
               const mutatedNode = makeDynamicNode(node, id)
               add += mutatedNode.end - mutatedNode.start - length
               return
             }
           },
-          CallExpression(node) {
+          CallExpression: (node) => {
             if (node.callee.type !== "Identifier") return
             if (node.callee.name === "css") {
               const cssNode = node.arguments[0]
               if (cssNode.type === "Literal") {
+                if (typeof cssNode.value !== "string") {
+                  this.error('css() must be called with a string literal or template literal', node.start)
+                }
                 jsParts.push({ type: "global", start: node.start - add, end: node.end })
                 cssParts.push({ type: "take", start: cssNode.start, end: cssNode.end })
               } else if (cssNode.type === "TemplateLiteral") {
+                if (cssNode.quasis.length !== 1) {
+                  this.error('css(``) does not support dynamic parts', node.start)
+                }
                 const { quasis: [quasiNode] } = cssNode
                 jsParts.push({ type: "global", start: node.start - add, end: node.end })
                 cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
-              } else { return }
+              } else {
+                this.error('css() must be called with a string literal or template literal', node.start)
+              }
               const length = node.end - (node.start - add)
               const mutatedNode = makeGlobalNode(node)
               add += mutatedNode.end - mutatedNode.start - length
@@ -99,20 +114,27 @@ function CssExtract(): PluginOption {
               const cssNode = node.arguments[0]
               if (cssNode.type === "Literal") {
                 const value = cssNode.value
-                if (typeof value !== "string") return
+                if (typeof value !== "string") {
+                  this.error('inline() must be called with a string literal or template literal', node.start)
+                }
                 const id = 'c' + dynamicId++
                 jsParts.push({ type: "dynamic", start: node.start - add, end: node.end, id })
-                cssParts.push({ type: "add", content: `\n.${id}{\n` })
+                cssParts.push({ type: "add", content: `\n.${id}{\n`, start: cssNode.start })
                 cssParts.push({ type: "take", start: cssNode.start, end: cssNode.end })
-                cssParts.push({ type: "add", content: `\n}\n` })
+                cssParts.push({ type: "add", content: `\n}\n`, start: cssNode.end })
               } else if (cssNode.type === "TemplateLiteral") {
+                if (cssNode.quasis.length !== 1) {
+                  this.error('inline(``) does not support dynamic parts', node.start)
+                }
                 const { quasis: [quasiNode] } = cssNode
                 const id = 'c' + dynamicId++
                 jsParts.push({ type: "dynamic", start: node.start - add, end: node.end, id })
-                cssParts.push({ type: "add", content: `\n.${id}{\n` })
+                cssParts.push({ type: "add", content: `\n.${id}{\n`, start: quasiNode.start })
                 cssParts.push({ type: "take", start: quasiNode.start, end: quasiNode.end })
-                cssParts.push({ type: "add", content: `\n}\n` })
-              } else { return }
+                cssParts.push({ type: "add", content: `\n}\n`, start: quasiNode.end })
+              } else {
+                this.error('inline() must be called with a string literal or template literal', node.start)
+              }
               const length = node.end - (node.start - add)
               const mutatedNode = makeDynamicNode(node, id)
               add += mutatedNode.end - mutatedNode.start - length
@@ -136,8 +158,35 @@ function CssExtract(): PluginOption {
           }
         }
         cssString = cssString.replace(/\n+/g, "\n")
-        const cssFileName = createHash('sha1').update(cssString).digest('base64').replace(/\+/g, "_").replace(/\//g, "_").replace(/=/g, "") + '.module.css'
+
+        // const c = new MagicString(code)
+        // let cssCursor = code.length
+        // for (let i = cssParts.length - 1; i >= 0; i--) {
+        //   const current = cssParts[i]
+        //   if (current.type === "add") {
+        //     const { content, start } = current
+        //     c.overwrite(start, cssCursor, content)
+        //     cssCursor = start
+        //     continue
+        //   }
+        //   if (current.type === "take") {
+        //     const { start, end } = current
+        //     c.remove(end, cssCursor)
+        //     c.addSourcemapLocation(start)
+        //     cssCursor = start
+        //     continue
+        //   }
+        // }
+        // c.remove(0, cssCursor)
+        // const cssString = c.toString()
+        // const cssMap = c.generateMap({ source: id })
+
+        const hash = createHash('sha1').update(cssString).digest('base64').replace(/=/g, "")
+        const cssFileName = id + '.module.css?hash=' + hash
+        this.debug(`emitting css file ${cssFileName}`)
         virtualCssFiles.set(cssFileName, cssString)
+        // virtualCssMaps.set(cssFileName, cssMap)
+        this.load({ id: cssFileName })
 
         const s = new MagicString(code)
         for (let i = jsParts.length - 1; i >= 0; i--) {
@@ -352,7 +401,7 @@ function walkAst(ast: TSESTree.BaseNode, listener: Listener) {
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [CssExtract(), react()],
+  plugins: [react(), CssExtract()],
   build: {
     sourcemap: true,
     cssMinify: "lightningcss"
